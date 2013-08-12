@@ -29,7 +29,7 @@ class GuassianStrategy(CurveStrategy):
       self.x = np.arange(float(len(y)))
     x = self.x
 
-    p0 = (1./np.std(y), 0.0, np.argmax(y))
+    p0 = (1./np.std(y), np.argmax(y), max(y))
 
     try:
       popt, pcov = curve_fit(self.__function, x, y, maxfev=10000, p0=p0)
