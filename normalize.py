@@ -7,15 +7,6 @@ import logging
 
 logging.basicConfig(level=logging.DEBUG)
 
-class Normalization:
-  def __init__(self, buffer_):
-    self.buffer_ = buffer_
-
-class HF:
-  def __init__(self, buffer_):
-    index = np.int_(buffer_['TimeTicksHF'][0][0].flatten())
-    self._hf = pd.DataFrame(buffer_['HF'][0][0].transpose(), index=index)
-
 class Phase:
   def __init__(self, buffer_, phase):
     phase = str(phase)
@@ -49,36 +40,73 @@ class Tagging:
       off_time = event[3][0][0]
       yield (appliance_id, appliance_name, on_time, off_time)
 
+class Normalization:
+  def __init__(self, buffer_):
+    self.buffer_ = buffer_
+
+class HF:
+  WINDOW = 25
+  THRESHOLD = 8.0
+
+  def __init__(self, buffer_):
+    index = np.int_(buffer_['TimeTicksHF'][0][0].flatten())
+    self._hf = pd.DataFrame(buffer_['HF'][0][0].transpose(), index=index)
+
+  def segment(self, s):
+    i = s * self.WINDOW
+    return self._hf.iloc[i:i + self.WINDOW]
+
+  def signature(self, s):
+    return self.segment(s).mean()
+
+  def difference(self, s, signature_offset=0):
+    return self.segment(s) - self.signature(s+signature_offset)
+
+  def reject_outliers(self, data, m=2.):
+    return data[abs(data - np.mean(data)) < m * np.std(data)]
+
+  def max_row(self, segment):
+    a = np.asarray(segment)
+    return a[a[:,a.max(axis=0).argmax()].argmax(),:]
+
+  def event(self, difference_):
+    max_row = self.max_row(difference_)
+    smooth_max_row = self.reject_outliers(max_row)
+    max_peak = smooth_max_row.max()
+    logging.info("Max peak: %(mp)f" % {'mp': max_peak})
+
+    if max_peak > self.THRESHOLD:
+      return max_row
+    else:
+      return None
+
+  def detect_events(self):
+    segments = self._hf.shape[0] / self.WINDOW
+    for s in range(segments):
+
+      event = self.event(self.difference(s))
+      if event is not None:
+        difference_ = self.difference(s, signature_offset=1)
+        event = self.max_row(difference_)
+
+        logging.info(event.shape)
+        plt.figure()
+        plt.subplot(311)
+        plt.imshow(self.segment(s), interpolation='nearest')
+        plt.subplot(312)
+        plt.imshow(difference_, interpolation='nearest')
+        plt.subplot(313)
+        plt.plot(event)
+        plt.xlim((0, 4096))
+        plt.show()
+        plt.close()
+        logging.info("Event detected in %(s)d" % {'s': s})
+      else:
+        logging.info("No event found in %(s)d" % {'s': s})
+
 if __name__ == '__main__':
   for file_ in glob('data/H1/Tagged_Training*.mat'):
     data = loadmat(file_)
     buffer_ = data['Buffer']
-
-    l1 = Phase(buffer_, 1)
-    l2 = Phase(buffer_, 2)
-
-    on_off = l1.at_rest()
-
     hf = HF(buffer_)
-
-    tagging = Tagging(buffer_)
-
-    plt.figure()
-
-    bottom = min(l1._phase.factor.min(), l2._phase.factor.min())
-    on_times, off_times, devices = [], [], set()
-    for (_, appliance_name, on_time, off_time) in tagging.each_event():
-      on_times.append(on_time)
-      off_times.append(off_time)
-      devices.add(appliance_name)
-      plt.plot((on_time, on_time), (1, bottom), '-g')
-      plt.plot((off_time, off_time), (1, bottom), '-m')
-
-    plt.title(', '.join(devices))
-
-    plt.plot(l1._phase.factor.index, l1._phase.factor, '-r')
-    plt.plot(l2._phase.factor.index, l2._phase.factor, '-b')
-
-    plt.xlim(min(on_times), max(off_times))
-
-    plt.show()
+    hf.detect_events()
